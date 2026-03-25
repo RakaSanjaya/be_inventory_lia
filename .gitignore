@@ -12,6 +12,9 @@ dist/
 .DS_Store
 *.pem
 
+# WhatsApp Baileys session data
+wa-session/
+
 # debug logs
 npm-debug.log*
 yarn-debug.log*

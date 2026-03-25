@@ -2,7 +2,8 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import dotenv from "dotenv";
-import { connectDB } from "./config/database.js";
+import { connectDB, disconnectDB } from "./config/database.js";
+import { errorHandler, requestLogger } from "./middleware/errorHandler.js";
 
 import authRoutes from "./routes/auth.js";
 import userRoutes from "./routes/users.js";
@@ -16,10 +17,19 @@ import dashboardRoutes from "./routes/dashboard.js";
 import notificationRoutes from "./routes/notifications.js";
 import activityLogRoutes from "./routes/activityLog.js";
 import stockRoutes from "./routes/stock.js";
+import configRoutes from "./routes/config.js";
+import whatsappRoutes from "./routes/whatsapp.js";
+import { startOverdueCron, stopOverdueCron } from "./services/overdueCron.js";
 
 dotenv.config();
 
 const app = new Hono();
+
+// Global error handler (must be first)
+app.use("*", errorHandler);
+
+// Request logging
+app.use("*", requestLogger);
 
 // Security headers
 app.use("*", async (c, next) => {
@@ -55,6 +65,7 @@ app.use(
 
 // Routes
 app.route("/api/auth", authRoutes);
+app.route("/api/config", configRoutes);
 app.route("/api/users", userRoutes);
 app.route("/api/categories", categoryRoutes);
 app.route("/api/locations", locationRoutes);
@@ -66,6 +77,7 @@ app.route("/api/dashboard", dashboardRoutes);
 app.route("/api/notifications", notificationRoutes);
 app.route("/api/activity-log", activityLogRoutes);
 app.route("/api/stock", stockRoutes);
+app.route("/api/whatsapp", whatsappRoutes);
 
 // Health check
 app.get("/api/health", (c) =>
@@ -76,9 +88,24 @@ app.get("/api/health", (c) =>
 const PORT = parseInt(process.env.PORT || "4000");
 
 connectDB().then(() => {
-  serve({ fetch: app.fetch, port: PORT }, (info) => {
+  // Start overdue checker cron
+  startOverdueCron();
+
+  const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`🚀 Server running on http://localhost:${info.port}`);
   });
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`\n${signal} received. Shutting down gracefully...`);
+    stopOverdueCron();
+    server.close();
+    await disconnectDB();
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 });
 
 export default app;

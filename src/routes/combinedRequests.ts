@@ -5,6 +5,7 @@ import { ConsumableRequest } from "../models/ConsumableRequest.js";
 import { Item } from "../models/Item.js";
 import { Notification } from "../models/Notification.js";
 import { authMiddleware } from "../middleware/auth.js";
+import type { AppEnv } from "../types/env.js";
 
 const combinedRequestSchema = z.object({
   borrowItems: z
@@ -30,7 +31,7 @@ const combinedRequestSchema = z.object({
   expectedReturnDate: z.string().optional(),
 });
 
-const combinedRequests = new Hono();
+const combinedRequests = new Hono<AppEnv>();
 combinedRequests.use("*", authMiddleware);
 
 /**

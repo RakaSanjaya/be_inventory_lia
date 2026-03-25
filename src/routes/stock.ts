@@ -5,8 +5,9 @@ import { AuditLog } from "../models/AuditLog.js";
 import { Notification } from "../models/Notification.js";
 import { authMiddleware, roleGuard } from "../middleware/auth.js";
 import { z } from "zod";
+import type { AppEnv } from "../types/env.js";
 
-const stock = new Hono();
+const stock = new Hono<AppEnv>();
 stock.use("*", authMiddleware);
 
 // ─── Schemas ───────────────────────────────────────────
@@ -45,7 +46,7 @@ stock.post("/in", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const body = await c.req.json();
     const data = stockInSchema.parse(body);
-    const userId = c.get("userId" as any);
+    const userId = c.get("userId");
 
     const item = await Item.findById(data.itemId);
     if (!item) return c.json({ error: "Barang tidak ditemukan" }, 404);
@@ -94,7 +95,7 @@ stock.post("/out", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const body = await c.req.json();
     const data = stockOutSchema.parse(body);
-    const userId = c.get("userId" as any);
+    const userId = c.get("userId");
 
     const item = await Item.findOneAndUpdate(
       { _id: data.itemId, availableQty: { $gte: data.quantity } },
@@ -145,6 +146,8 @@ stock.post("/out", roleGuard("super_admin", "admin"), async (c) => {
         title: "Stok Rendah",
         message: `${item.name} (${item.code}) sisa ${item.availableQty} unit, di bawah minimum ${item.minStock}`,
         type: "warning",
+        relatedModel: "Item",
+        relatedId: item._id,
       });
     }
 
@@ -161,7 +164,7 @@ stock.post("/adjustment", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const body = await c.req.json();
     const data = adjustmentSchema.parse(body);
-    const userId = c.get("userId" as any);
+    const userId = c.get("userId");
 
     const item = await Item.findById(data.itemId);
     if (!item) return c.json({ error: "Barang tidak ditemukan" }, 404);
@@ -219,7 +222,7 @@ stock.post("/transfer", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const body = await c.req.json();
     const data = transferSchema.parse(body);
-    const userId = c.get("userId" as any);
+    const userId = c.get("userId");
 
     const item = await Item.findById(data.itemId).populate(
       "location",
@@ -278,7 +281,7 @@ stock.post("/transfer", roleGuard("super_admin", "admin"), async (c) => {
 });
 
 // ─── Riwayat Transaksi Stok ────────────────────────────
-stock.get("/history", async (c) => {
+stock.get("/history", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const page = parseInt(c.req.query("page") || "1");
     const limit = parseInt(c.req.query("limit") || "20");
@@ -318,7 +321,7 @@ stock.get("/history", async (c) => {
 });
 
 // ─── Riwayat per Item ──────────────────────────────────
-stock.get("/history/:itemId", async (c) => {
+stock.get("/history/:itemId", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const { itemId } = c.req.param();
     const transactions = await StockTransaction.find({ item: itemId })
@@ -335,7 +338,7 @@ stock.get("/history/:itemId", async (c) => {
 });
 
 // ─── Summary per Item ──────────────────────────────────
-stock.get("/summary/:itemId", async (c) => {
+stock.get("/summary/:itemId", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const { itemId } = c.req.param();
     const summary = await StockTransaction.aggregate([

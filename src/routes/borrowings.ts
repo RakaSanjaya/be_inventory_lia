@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Borrowing } from "../models/Borrowing.js";
 import { Item } from "../models/Item.js";
+import { User } from "../models/User.js";
 import { Notification } from "../models/Notification.js";
 import { AuditLog } from "../models/AuditLog.js";
 import { StockTransaction } from "../models/StockTransaction.js";
@@ -10,8 +11,10 @@ import {
   rejectSchema,
   returnBorrowingSchema,
 } from "../utils/validation.js";
+import { sendWANotification } from "../utils/waNotify.js";
+import type { AppEnv } from "../types/env.js";
 
-const borrowings = new Hono();
+const borrowings = new Hono<AppEnv>();
 borrowings.use("*", authMiddleware);
 
 // List all borrowings (admin)
@@ -21,9 +24,28 @@ borrowings.get("/", roleGuard("super_admin", "admin"), async (c) => {
     const limit = parseInt(c.req.query("limit") || "20");
     const status = c.req.query("status") || "";
     const search = c.req.query("search") || "";
+    const startDate = c.req.query("startDate") || "";
+    const endDate = c.req.query("endDate") || "";
 
     const query: any = {};
     if (status) query.status = status;
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = end;
+      }
+    }
+
+    // If search, first find matching user IDs by name
+    if (search) {
+      const matchingUsers = await User.find({
+        name: { $regex: search, $options: "i" },
+      }).select("_id");
+      query.borrower = { $in: matchingUsers.map((u) => u._id) };
+    }
 
     const total = await Borrowing.countDocuments(query);
     const list = await Borrowing.find(query)
@@ -49,10 +71,26 @@ borrowings.get("/", roleGuard("super_admin", "admin"), async (c) => {
 borrowings.get("/my", async (c) => {
   try {
     const userId = c.get("userId");
-    const list = await Borrowing.find({ borrower: userId })
+    const page = parseInt(c.req.query("page") || "1");
+    const limit = parseInt(c.req.query("limit") || "20");
+    const status = c.req.query("status") || "";
+
+    const query: any = { borrower: userId };
+    if (status) query.status = status;
+
+    const total = await Borrowing.countDocuments(query);
+    const list = await Borrowing.find(query)
       .populate("items.item", "name code")
+      .populate("approvedBy", "name")
+      .skip((page - 1) * limit)
+      .limit(limit)
       .sort({ createdAt: -1 });
-    return c.json({ borrowings: list });
+    return c.json({
+      borrowings: list,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    });
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
   }
@@ -82,6 +120,18 @@ borrowings.get("/:id", async (c) => {
       .populate("items.item", "name code type condition")
       .populate("approvedBy", "name");
     if (!borrowing) return c.json({ error: "Peminjaman tidak ditemukan" }, 404);
+
+    // Non-admin users can only view their own borrowings
+    const userRole = c.get("userRole");
+    const userId = c.get("userId");
+    if (
+      userRole !== "super_admin" &&
+      userRole !== "admin" &&
+      (borrowing.borrower as any)?._id?.toString() !== userId
+    ) {
+      return c.json({ error: "Akses ditolak" }, 403);
+    }
+
     return c.json({ borrowing });
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
@@ -300,6 +350,9 @@ borrowings.put("/:id/approve", roleGuard("super_admin", "admin"), async (c) => {
       relatedId: borrowing._id,
     });
 
+    // WhatsApp notification
+    sendWANotification(borrowing.borrower.toString(), "borrowing_approved");
+
     await AuditLog.create({
       user: userId,
       action: "approve_borrowing",
@@ -339,6 +392,11 @@ borrowings.put("/:id/reject", roleGuard("super_admin", "admin"), async (c) => {
       type: "error",
       relatedModel: "Borrowing",
       relatedId: borrowing._id,
+    });
+
+    // WhatsApp notification
+    sendWANotification(borrowing.borrower.toString(), "borrowing_rejected", {
+      reason: notes,
     });
 
     await AuditLog.create({
@@ -396,7 +454,7 @@ borrowings.put("/:id/return", roleGuard("super_admin", "admin"), async (c) => {
             newAvailableQty: before.availableQty + returnItem.returnedQty,
             reason: `Pengembalian barang${returnItem.condition === "damaged" ? " (rusak)" : ""}`,
             reference: { model: "Borrowing", id: borrowing._id },
-            performedBy: c.get("userId" as any),
+            performedBy: c.get("userId"),
           });
         }
       }
@@ -415,6 +473,9 @@ borrowings.put("/:id/return", roleGuard("super_admin", "admin"), async (c) => {
       relatedModel: "Borrowing",
       relatedId: borrowing._id,
     });
+
+    // WhatsApp notification
+    sendWANotification(borrowing.borrower.toString(), "borrowing_returned");
 
     await AuditLog.create({
       user: c.get("userId"),

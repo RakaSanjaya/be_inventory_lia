@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { Location } from "../models/Location.js";
+import { Item } from "../models/Item.js";
 import { authMiddleware, roleGuard } from "../middleware/auth.js";
 import { locationSchema } from "../utils/validation.js";
 
@@ -50,7 +51,17 @@ locations.put("/:id", roleGuard("super_admin", "admin"), async (c) => {
 
 locations.delete("/:id", roleGuard("super_admin", "admin"), async (c) => {
   try {
-    const location = await Location.findByIdAndDelete(c.req.param("id"));
+    const id = c.req.param("id");
+    const itemCount = await Item.countDocuments({ location: id });
+    if (itemCount > 0) {
+      return c.json(
+        {
+          error: `Tidak dapat menghapus lokasi. Masih ada ${itemCount} barang di lokasi ini.`,
+        },
+        400,
+      );
+    }
+    const location = await Location.findByIdAndDelete(id);
     if (!location) return c.json({ error: "Lokasi tidak ditemukan" }, 404);
     return c.json({ message: "Lokasi berhasil dihapus" });
   } catch (error: any) {

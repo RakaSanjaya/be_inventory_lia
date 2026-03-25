@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { Category } from "../models/Category.js";
+import { Item } from "../models/Item.js";
 import { authMiddleware, roleGuard } from "../middleware/auth.js";
 import { categorySchema } from "../utils/validation.js";
 
@@ -50,7 +51,17 @@ categories.put("/:id", roleGuard("super_admin", "admin"), async (c) => {
 
 categories.delete("/:id", roleGuard("super_admin", "admin"), async (c) => {
   try {
-    const category = await Category.findByIdAndDelete(c.req.param("id"));
+    const id = c.req.param("id");
+    const itemCount = await Item.countDocuments({ category: id });
+    if (itemCount > 0) {
+      return c.json(
+        {
+          error: `Tidak dapat menghapus kategori. Masih ada ${itemCount} barang yang menggunakan kategori ini.`,
+        },
+        400,
+      );
+    }
+    const category = await Category.findByIdAndDelete(id);
     if (!category) return c.json({ error: "Kategori tidak ditemukan" }, 404);
     return c.json({ message: "Kategori berhasil dihapus" });
   } catch (error: any) {

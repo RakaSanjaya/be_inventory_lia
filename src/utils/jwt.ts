@@ -28,3 +28,8 @@ export const verifyRefreshToken = (
 ): { userId: string; role: string } => {
   return jwt.verify(token, REFRESH_SECRET) as { userId: string; role: string };
 };
+
+export const decodeTokenExpiry = (token: string): number | null => {
+  const decoded = jwt.decode(token) as { exp?: number } | null;
+  return decoded?.exp ?? null;
+};

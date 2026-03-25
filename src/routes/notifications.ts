@@ -1,9 +1,23 @@
 import { Hono } from "hono";
 import { Notification } from "../models/Notification.js";
 import { authMiddleware } from "../middleware/auth.js";
+import type { AppEnv } from "../types/env.js";
 
-const notifications = new Hono();
+const notifications = new Hono<AppEnv>();
 notifications.use("*", authMiddleware);
+
+notifications.get("/unread-count", async (c) => {
+  try {
+    const userId = c.get("userId");
+    const unreadCount = await Notification.countDocuments({
+      user: userId,
+      isRead: false,
+    });
+    return c.json({ unreadCount });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
 
 notifications.get("/", async (c) => {
   try {

@@ -4,33 +4,57 @@ import { Borrowing } from "../models/Borrowing.js";
 import { ConsumableRequest } from "../models/ConsumableRequest.js";
 import { User } from "../models/User.js";
 import { authMiddleware, roleGuard } from "../middleware/auth.js";
+import type { AppEnv } from "../types/env.js";
 
-const dashboard = new Hono();
+const dashboard = new Hono<AppEnv>();
 dashboard.use("*", authMiddleware);
 
 // Summary stats
 dashboard.get("/stats", async (c) => {
   try {
-    const totalItems = await Item.countDocuments();
-    const totalReturnable = await Item.countDocuments({ type: "returnable" });
-    const totalConsumable = await Item.countDocuments({ type: "consumable" });
-    const totalBorrowed = await Borrowing.countDocuments({
-      status: "borrowed",
+    const userRole = c.get("userRole");
+    const userId = c.get("userId");
+    const isAdmin = ["super_admin", "admin"].includes(userRole);
+
+    const baseFilter = { isArchived: { $ne: true } };
+
+    const totalItems = await Item.countDocuments(baseFilter);
+    const totalReturnable = await Item.countDocuments({
+      ...baseFilter,
+      type: "returnable",
     });
+    const totalConsumable = await Item.countDocuments({
+      ...baseFilter,
+      type: "consumable",
+    });
+
+    // Borrowing stats (role-aware)
+    const borrowFilter: any = { status: "borrowed" };
+    const pendingFilter: any = { status: "pending" };
+    if (!isAdmin) {
+      borrowFilter.borrower = userId;
+      pendingFilter.borrower = userId;
+    }
+
+    const totalBorrowed = await Borrowing.countDocuments(borrowFilter);
     const totalOverdue = await Borrowing.countDocuments({
-      status: "borrowed",
+      ...borrowFilter,
       expectedReturnDate: { $lt: new Date() },
     });
-    const pendingApprovals = await Borrowing.countDocuments({
-      status: "pending",
-    });
-    const pendingConsumable = await ConsumableRequest.countDocuments({
-      status: "pending",
-    });
-    const totalUsers = await User.countDocuments();
+    const pendingApprovals = await Borrowing.countDocuments(pendingFilter);
+    const pendingConsumable = await ConsumableRequest.countDocuments(
+      isAdmin
+        ? { status: "pending" }
+        : { status: "pending", requester: userId },
+    );
 
-    const damagedItems = await Item.countDocuments({ condition: "damaged" });
+    const totalUsers = isAdmin ? await User.countDocuments() : 0;
+    const damagedItems = await Item.countDocuments({
+      ...baseFilter,
+      condition: "damaged",
+    });
     const lowStockItems = await Item.countDocuments({
+      ...baseFilter,
       type: "consumable",
       $expr: { $lte: ["$availableQty", "$minStock"] },
     });
@@ -55,7 +79,7 @@ dashboard.get("/stats", async (c) => {
 });
 
 // Chart data: borrowings per month (last 12 months)
-dashboard.get("/charts", async (c) => {
+dashboard.get("/charts", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const now = new Date();
     const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), 1);
@@ -125,7 +149,7 @@ dashboard.get("/charts", async (c) => {
 });
 
 // Recent activities
-dashboard.get("/recent", async (c) => {
+dashboard.get("/recent", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const recentBorrowings = await Borrowing.find()
       .populate("borrower", "name")
@@ -145,13 +169,27 @@ dashboard.get("/recent", async (c) => {
   }
 });
 
-// CSV Export - inventory report
+// CSV Export - inventory report with date range filter
 dashboard.get("/export/csv", roleGuard("super_admin", "admin"), async (c) => {
   try {
     const type = c.req.query("type") || "items";
+    const startDate = c.req.query("startDate");
+    const endDate = c.req.query("endDate");
+
+    // Build date range filter
+    const dateFilter: any = {};
+    if (startDate) dateFilter.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.$lte = end;
+    }
 
     if (type === "items") {
-      const items = await Item.find()
+      const query: any = { isArchived: { $ne: true } };
+      if (startDate || endDate) query.createdAt = dateFilter;
+
+      const items = await Item.find(query)
         .populate("category", "name")
         .populate("location", "building room")
         .lean();
@@ -188,7 +226,10 @@ dashboard.get("/export/csv", roleGuard("super_admin", "admin"), async (c) => {
     }
 
     if (type === "borrowings") {
-      const borrowings = await Borrowing.find()
+      const query: any = {};
+      if (startDate || endDate) query.createdAt = dateFilter;
+
+      const borrowings = await Borrowing.find(query)
         .populate("borrower", "name email department")
         .populate("items.item", "name code")
         .populate("approvedBy", "name")
@@ -221,6 +262,47 @@ dashboard.get("/export/csv", roleGuard("super_admin", "admin"), async (c) => {
       c.header(
         "Content-Disposition",
         "attachment; filename=borrowings-report.csv",
+      );
+      return c.body("\uFEFF" + header + rows);
+    }
+
+    if (type === "consumables") {
+      const query: any = {};
+      if (startDate || endDate) query.createdAt = dateFilter;
+
+      const requests = await ConsumableRequest.find(query)
+        .populate("requester", "name email department")
+        .populate("items.item", "name code")
+        .populate("approvedBy", "name")
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const header =
+        "Tanggal,Pemohon,Departemen,Barang,Jumlah,Status,Tgl Disetujui,Disetujui Oleh\n";
+      const rows = requests
+        .map((r: any) => {
+          const itemsList = r.items
+            .map((i: any) => `${i.item?.name || ""}(${i.quantity})`)
+            .join("; ");
+          return [
+            new Date(r.createdAt).toLocaleDateString("id-ID"),
+            `"${r.requester?.name || ""}"`,
+            `"${r.requester?.department || ""}"`,
+            `"${itemsList}"`,
+            r.items.reduce((sum: number, i: any) => sum + i.quantity, 0),
+            r.status,
+            r.approvedAt
+              ? new Date(r.approvedAt).toLocaleDateString("id-ID")
+              : "",
+            `"${r.approvedBy?.name || ""}"`,
+          ].join(",");
+        })
+        .join("\n");
+
+      c.header("Content-Type", "text/csv; charset=utf-8");
+      c.header(
+        "Content-Disposition",
+        "attachment; filename=consumables-report.csv",
       );
       return c.body("\uFEFF" + header + rows);
     }

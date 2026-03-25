@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import bcrypt from "bcryptjs";
 import { User } from "../models/User.js";
+import { Borrowing } from "../models/Borrowing.js";
 import { authMiddleware, roleGuard } from "../middleware/auth.js";
 import { updateUserSchema } from "../utils/validation.js";
 
@@ -57,6 +58,13 @@ users.put("/:id", roleGuard("super_admin", "admin"), async (c) => {
       return c.json({ error: parsed.error.issues[0].message }, 400);
     }
     const data = { ...parsed.data } as any;
+
+    // Only super_admin can change roles
+    const currentRole = c.get("userRole");
+    if (data.role && currentRole !== "super_admin") {
+      delete data.role;
+    }
+
     if (data.password) {
       data.password = await bcrypt.hash(data.password, 10);
     }
@@ -73,7 +81,20 @@ users.put("/:id", roleGuard("super_admin", "admin"), async (c) => {
 // Delete user
 users.delete("/:id", roleGuard("super_admin"), async (c) => {
   try {
-    const user = await User.findByIdAndDelete(c.req.param("id"));
+    const id = c.req.param("id");
+    const activeBorrowings = await Borrowing.countDocuments({
+      borrower: id,
+      status: { $in: ["pending", "approved", "borrowed"] },
+    });
+    if (activeBorrowings > 0) {
+      return c.json(
+        {
+          error: `Tidak dapat menghapus user. Masih ada ${activeBorrowings} peminjaman aktif.`,
+        },
+        400,
+      );
+    }
+    const user = await User.findByIdAndDelete(id);
     if (!user) return c.json({ error: "User tidak ditemukan" }, 404);
     return c.json({ message: "User berhasil dihapus" });
   } catch (error: any) {

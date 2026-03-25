@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { ConsumableRequest } from "../models/ConsumableRequest.js";
 import { Item } from "../models/Item.js";
+import { User } from "../models/User.js";
 import { Notification } from "../models/Notification.js";
 import { AuditLog } from "../models/AuditLog.js";
 import { StockTransaction } from "../models/StockTransaction.js";
@@ -9,8 +10,10 @@ import {
   createConsumableRequestSchema,
   rejectSchema,
 } from "../utils/validation.js";
+import { sendWANotification } from "../utils/waNotify.js";
+import type { AppEnv } from "../types/env.js";
 
-const consumableRequests = new Hono();
+const consumableRequests = new Hono<AppEnv>();
 consumableRequests.use("*", authMiddleware);
 
 // List requests
@@ -21,12 +24,30 @@ consumableRequests.get("/", async (c) => {
     const page = parseInt(c.req.query("page") || "1");
     const limit = parseInt(c.req.query("limit") || "20");
     const status = c.req.query("status") || "";
+    const search = c.req.query("search") || "";
+    const startDate = c.req.query("startDate") || "";
+    const endDate = c.req.query("endDate") || "";
 
     const query: any = {};
     if (!["super_admin", "admin"].includes(userRole)) {
       query.requester = userId;
     }
     if (status) query.status = status;
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = end;
+      }
+    }
+    if (search && ["super_admin", "admin"].includes(userRole)) {
+      const matchingUsers = await User.find({
+        name: { $regex: search, $options: "i" },
+      }).select("_id");
+      query.requester = { $in: matchingUsers.map((u) => u._id) };
+    }
 
     const total = await ConsumableRequest.countDocuments(query);
     const list = await ConsumableRequest.find(query)
@@ -109,6 +130,9 @@ consumableRequests.put(
         relatedId: request._id,
       });
 
+      // WhatsApp notification
+      sendWANotification(request.requester.toString(), "consumable_approved");
+
       await AuditLog.create({
         user: userId,
         action: "approve_consumable",
@@ -144,6 +168,11 @@ consumableRequests.put(
       request.status = "rejected";
       request.notes = notes;
       await request.save();
+
+      // WhatsApp notification
+      sendWANotification(request.requester.toString(), "consumable_rejected", {
+        reason: notes,
+      });
 
       await AuditLog.create({
         user: c.get("userId"),
