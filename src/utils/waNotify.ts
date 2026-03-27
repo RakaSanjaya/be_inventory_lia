@@ -17,6 +17,12 @@ export const DEFAULT_TEMPLATES: Record<string, string> = {
     "✅ *Permintaan Disetujui*\n\nHalo {{name}},\nPermintaan barang habis pakai Anda telah disetujui. Barang akan segera disiapkan.",
   consumable_rejected:
     "❌ *Permintaan Ditolak*\n\nHalo {{name}},\nPermintaan barang habis pakai Anda ditolak.\nAlasan: {{reason}}",
+  consumable_fulfilled:
+    "📦 *Barang Siap Diambil*\n\nHalo {{name}},\nBarang habis pakai yang Anda minta telah diserahkan. Terima kasih!",
+  new_request_admin:
+    "📬 *{{appName}} - Permintaan Baru*\n\nAda permintaan baru dari {{name}} yang menunggu persetujuan.\nSilakan cek dashboard.",
+  low_stock_admin:
+    "⚠️ *{{appName}} - Stok Rendah*\n\n{{items}} sudah di bawah batas minimum stok. Segera lakukan pengadaan.",
   overdue_borrower:
     "⚠️ *{{appName}} - Pengingat Terlambat*\n\nHalo {{name}},\n\nPeminjaman Anda ({{items}}) sudah terlambat {{days}} hari. Segera kembalikan barang.\n\nTerima kasih.",
   overdue_admin:
@@ -69,10 +75,18 @@ export async function sendWANotification(
 ): Promise<void> {
   try {
     const config = await SystemConfig.findOne({ key: "whatsappEnabled" });
-    if (!config || !config.value) return;
+    if (!config || !config.value) {
+      console.log(`[WA] Notification skipped (disabled): ${templateKey}`);
+      return;
+    }
 
     const user = await User.findById(userId).select("phone name").lean();
-    if (!user?.phone) return;
+    if (!user?.phone) {
+      console.log(
+        `[WA] Notification skipped (no phone): ${templateKey} for user ${userId}`,
+      );
+      return;
+    }
 
     const templates = await getTemplates();
     const appName = await getAppName();
@@ -83,8 +97,76 @@ export async function sendWANotification(
       ...vars,
     });
 
-    await whatsapp.sendMessage(user.phone, message);
-  } catch {
-    // Silently ignore WA errors
+    const sent = await whatsapp.sendMessage(user.phone, message);
+    if (sent) {
+      console.log(`[WA] Sent ${templateKey} to ${user.name}`);
+    } else {
+      console.warn(
+        `[WA] Failed to send ${templateKey} to ${user.name} (not connected?)`,
+      );
+    }
+  } catch (err) {
+    console.error(`[WA] Error sending ${templateKey}:`, err);
+  }
+}
+
+/**
+ * Send WA notification to all active admins.
+ * Fails silently — WA is "best effort".
+ */
+export async function sendWAToAdmins(
+  templateKey: string,
+  vars: Record<string, string> = {},
+): Promise<void> {
+  try {
+    const config = await SystemConfig.findOne({ key: "whatsappEnabled" });
+    if (!config || !config.value) {
+      console.log(`[WA] Admin notification skipped (disabled): ${templateKey}`);
+      return;
+    }
+
+    const admins = await User.find({
+      role: { $in: ["super_admin", "admin"] },
+      isActive: true,
+      phone: { $ne: "" },
+    })
+      .select("phone name")
+      .lean();
+
+    if (admins.length === 0) {
+      console.log(
+        `[WA] Admin notification skipped (no admins with phone): ${templateKey}`,
+      );
+      return;
+    }
+
+    const templates = await getTemplates();
+    const appName = await getAppName();
+    const template = templates[templateKey] || templateKey;
+
+    for (const admin of admins) {
+      if (!admin.phone) continue;
+      const message = renderTemplate(template, {
+        appName,
+        name: admin.name,
+        ...vars,
+      });
+      whatsapp
+        .sendMessage(admin.phone, message)
+        .then((sent) => {
+          if (sent)
+            console.log(`[WA] Sent ${templateKey} to admin ${admin.name}`);
+          else
+            console.warn(`[WA] Failed ${templateKey} to admin ${admin.name}`);
+        })
+        .catch((err) =>
+          console.error(
+            `[WA] Error ${templateKey} to admin ${admin.name}:`,
+            err,
+          ),
+        );
+    }
+  } catch (err) {
+    console.error(`[WA] Error sending admin notification ${templateKey}:`, err);
   }
 }

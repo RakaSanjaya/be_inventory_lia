@@ -4,7 +4,9 @@ import { Borrowing } from "../models/Borrowing.js";
 import { ConsumableRequest } from "../models/ConsumableRequest.js";
 import { Item } from "../models/Item.js";
 import { Notification } from "../models/Notification.js";
+import { User } from "../models/User.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { sendWAToAdmins } from "../utils/waNotify.js";
 import type { AppEnv } from "../types/env.js";
 
 const combinedRequestSchema = z.object({
@@ -107,6 +109,24 @@ combinedRequests.post("/", async (c) => {
         relatedModel: "Borrowing",
         relatedId: borrowing._id,
       });
+
+      // Notify all admins about new borrowing request
+      const requester = await User.findById(userId).select("name").lean();
+      const admins = await User.find({
+        role: { $in: ["super_admin", "admin"] },
+        isActive: true,
+      }).select("_id");
+      for (const admin of admins) {
+        await Notification.create({
+          user: admin._id,
+          title: "Permintaan Peminjaman Baru",
+          message: `${requester?.name || "User"} mengajukan peminjaman ${borrowItems.length} barang.`,
+          type: "info",
+          relatedModel: "Borrowing",
+          relatedId: borrowing._id,
+        });
+      }
+      sendWAToAdmins("new_request_admin", { name: requester?.name || "User" });
     }
 
     // --- Validate Consumable Items ---
@@ -149,6 +169,24 @@ combinedRequests.post("/", async (c) => {
         relatedModel: "ConsumableRequest",
         relatedId: consumableRequest._id,
       });
+
+      // Notify all admins about new consumable request
+      const cRequester = await User.findById(userId).select("name").lean();
+      const cAdmins = await User.find({
+        role: { $in: ["super_admin", "admin"] },
+        isActive: true,
+      }).select("_id");
+      for (const admin of cAdmins) {
+        await Notification.create({
+          user: admin._id,
+          title: "Permintaan Habis Pakai Baru",
+          message: `${cRequester?.name || "User"} mengajukan permintaan ${consumableItems.length} barang habis pakai.`,
+          type: "info",
+          relatedModel: "ConsumableRequest",
+          relatedId: consumableRequest._id,
+        });
+      }
+      sendWAToAdmins("new_request_admin", { name: cRequester?.name || "User" });
     }
 
     return c.json(

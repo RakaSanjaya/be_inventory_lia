@@ -9,6 +9,31 @@ import type { AppEnv } from "../types/env.js";
 const dashboard = new Hono<AppEnv>();
 dashboard.use("*", authMiddleware);
 
+// Lightweight badge counts for sidebar
+dashboard.get("/badge-counts", async (c) => {
+  try {
+    const userRole = c.get("userRole");
+    const userId = c.get("userId");
+    const isAdmin = ["super_admin", "admin"].includes(userRole);
+
+    const borrowFilter: any = { status: "pending" };
+    const consumableFilter: any = { status: "pending" };
+    if (!isAdmin) {
+      borrowFilter.borrower = userId;
+      consumableFilter.requester = userId;
+    }
+
+    const [pendingBorrowings, pendingConsumables] = await Promise.all([
+      Borrowing.countDocuments(borrowFilter),
+      ConsumableRequest.countDocuments(consumableFilter),
+    ]);
+
+    return c.json({ pendingBorrowings, pendingConsumables });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
 // Summary stats
 dashboard.get("/stats", async (c) => {
   try {

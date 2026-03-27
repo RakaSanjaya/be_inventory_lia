@@ -11,7 +11,7 @@ import {
   rejectSchema,
   returnBorrowingSchema,
 } from "../utils/validation.js";
-import { sendWANotification } from "../utils/waNotify.js";
+import { sendWANotification, sendWAToAdmins } from "../utils/waNotify.js";
 import type { AppEnv } from "../types/env.js";
 
 const borrowings = new Hono<AppEnv>();
@@ -195,6 +195,7 @@ borrowings.put(
 
           let stockOk = true;
           for (const bi of borrowing.items) {
+            const before = await Item.findById(bi.item);
             const result = await Item.findOneAndUpdate(
               { _id: bi.item, availableQty: { $gte: bi.quantity } },
               { $inc: { availableQty: -bi.quantity } },
@@ -210,6 +211,22 @@ borrowings.put(
               }
               stockOk = false;
               break;
+            }
+            try {
+              await StockTransaction.create({
+                item: bi.item,
+                type: "borrow",
+                quantity: bi.quantity,
+                previousQty: before?.quantity ?? 0,
+                newQty: result.quantity ?? 0,
+                previousAvailableQty: before?.availableQty ?? 0,
+                newAvailableQty: result.availableQty ?? 0,
+                reason: "Peminjaman disetujui (bulk)",
+                reference: { model: "Borrowing", id: borrowing._id },
+                performedBy: userId,
+              });
+            } catch (txErr) {
+              console.error("[StockTransaction] bulk borrow log error:", txErr);
             }
           }
 
@@ -231,6 +248,12 @@ borrowings.put(
             relatedModel: "Borrowing",
             relatedId: borrowing._id,
           });
+
+          // WhatsApp notification
+          sendWANotification(
+            borrowing.borrower.toString(),
+            "borrowing_approved",
+          );
 
           results.success++;
         } catch {
@@ -276,6 +299,15 @@ borrowings.put("/bulk/reject", roleGuard("super_admin", "admin"), async (c) => {
           relatedId: borrowing._id,
         });
 
+        // WhatsApp notification
+        sendWANotification(
+          borrowing.borrower.toString(),
+          "borrowing_rejected",
+          {
+            reason: notes || "Ditolak secara massal",
+          },
+        );
+
         results.success++;
       } catch {
         results.failed++;
@@ -305,19 +337,23 @@ borrowings.put("/:id/approve", roleGuard("super_admin", "admin"), async (c) => {
         { $inc: { availableQty: -bi.quantity } },
         { new: true },
       );
-      if (result && before) {
-        await StockTransaction.create({
-          item: bi.item,
-          type: "borrow",
-          quantity: bi.quantity,
-          previousQty: before.quantity,
-          newQty: result.quantity,
-          previousAvailableQty: before.availableQty,
-          newAvailableQty: result.availableQty,
-          reason: "Peminjaman disetujui",
-          reference: { model: "Borrowing", id: borrowing._id },
-          performedBy: userId,
-        });
+      if (result) {
+        try {
+          await StockTransaction.create({
+            item: bi.item,
+            type: "borrow",
+            quantity: bi.quantity,
+            previousQty: before?.quantity ?? 0,
+            newQty: result.quantity ?? 0,
+            previousAvailableQty: before?.availableQty ?? 0,
+            newAvailableQty: result.availableQty ?? 0,
+            reason: "Peminjaman disetujui",
+            reference: { model: "Borrowing", id: borrowing._id },
+            performedBy: userId,
+          });
+        } catch (txErr) {
+          console.error("[StockTransaction] borrow log error:", txErr);
+        }
       }
       if (!result) {
         // Rollback previous decrements
@@ -443,19 +479,22 @@ borrowings.put("/:id/return", roleGuard("super_admin", "admin"), async (c) => {
             ? { condition: "damaged" }
             : {}),
         });
-        if (before) {
+        try {
           await StockTransaction.create({
             item: bi.item,
             type: "return",
             quantity: returnItem.returnedQty,
-            previousQty: before.quantity,
-            newQty: before.quantity,
-            previousAvailableQty: before.availableQty,
-            newAvailableQty: before.availableQty + returnItem.returnedQty,
+            previousQty: before?.quantity ?? 0,
+            newQty: before?.quantity ?? 0,
+            previousAvailableQty: before?.availableQty ?? 0,
+            newAvailableQty:
+              (before?.availableQty ?? 0) + returnItem.returnedQty,
             reason: `Pengembalian barang${returnItem.condition === "damaged" ? " (rusak)" : ""}`,
             reference: { model: "Borrowing", id: borrowing._id },
             performedBy: c.get("userId"),
           });
+        } catch (txErr) {
+          console.error("[StockTransaction] return log error:", txErr);
         }
       }
     }

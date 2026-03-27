@@ -169,6 +169,16 @@ consumableRequests.put(
       request.notes = notes;
       await request.save();
 
+      // In-app notification
+      await Notification.create({
+        user: request.requester,
+        title: "Permintaan Ditolak",
+        message: `Permintaan barang habis pakai Anda ditolak. ${notes}`,
+        type: "error",
+        relatedModel: "ConsumableRequest",
+        relatedId: request._id,
+      });
+
       // WhatsApp notification
       sendWANotification(request.requester.toString(), "consumable_rejected", {
         reason: notes,
@@ -208,19 +218,23 @@ consumableRequests.put(
           { $inc: { availableQty: -ri.quantity, quantity: -ri.quantity } },
           { new: true },
         );
-        if (result && before) {
-          await StockTransaction.create({
-            item: ri.item,
-            type: "consume",
-            quantity: ri.quantity,
-            previousQty: before.quantity,
-            newQty: result.quantity,
-            previousAvailableQty: before.availableQty,
-            newAvailableQty: result.availableQty,
-            reason: "Permintaan habis pakai dipenuhi",
-            reference: { model: "ConsumableRequest", id: request._id },
-            performedBy: c.get("userId" as any),
-          });
+        if (result) {
+          try {
+            await StockTransaction.create({
+              item: ri.item,
+              type: "consume",
+              quantity: ri.quantity,
+              previousQty: before?.quantity ?? 0,
+              newQty: result.quantity ?? 0,
+              previousAvailableQty: before?.availableQty ?? 0,
+              newAvailableQty: result.availableQty ?? 0,
+              reason: "Permintaan habis pakai dipenuhi",
+              reference: { model: "ConsumableRequest", id: request._id },
+              performedBy: c.get("userId"),
+            });
+          } catch (txErr) {
+            console.error("[StockTransaction] consume log error:", txErr);
+          }
         }
         if (!result) {
           // Rollback previous decrements
@@ -242,6 +256,19 @@ consumableRequests.put(
       request.status = "fulfilled";
       request.fulfilledAt = new Date();
       await request.save();
+
+      // In-app notification
+      await Notification.create({
+        user: request.requester,
+        title: "Barang Telah Diserahkan",
+        message: "Barang habis pakai yang Anda minta telah diserahkan.",
+        type: "success",
+        relatedModel: "ConsumableRequest",
+        relatedId: request._id,
+      });
+
+      // WhatsApp notification
+      sendWANotification(request.requester.toString(), "consumable_fulfilled");
 
       await AuditLog.create({
         user: c.get("userId"),

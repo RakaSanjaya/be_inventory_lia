@@ -3,7 +3,9 @@ import { Item } from "../models/Item.js";
 import { StockTransaction } from "../models/StockTransaction.js";
 import { AuditLog } from "../models/AuditLog.js";
 import { Notification } from "../models/Notification.js";
+import { User } from "../models/User.js";
 import { authMiddleware, roleGuard } from "../middleware/auth.js";
+import { sendWAToAdmins } from "../utils/waNotify.js";
 import { z } from "zod";
 import type { AppEnv } from "../types/env.js";
 
@@ -139,15 +141,24 @@ stock.post("/out", roleGuard("super_admin", "admin"), async (c) => {
       },
     });
 
-    // Low stock alert
+    // Low stock alert — notify all admins
     if (item.minStock && item.availableQty <= item.minStock) {
-      await Notification.create({
-        user: userId,
-        title: "Stok Rendah",
-        message: `${item.name} (${item.code}) sisa ${item.availableQty} unit, di bawah minimum ${item.minStock}`,
-        type: "warning",
-        relatedModel: "Item",
-        relatedId: item._id,
+      const admins = await User.find({
+        role: { $in: ["super_admin", "admin"] },
+        isActive: true,
+      }).select("_id");
+      for (const admin of admins) {
+        await Notification.create({
+          user: admin._id,
+          title: "Stok Rendah",
+          message: `${item.name} (${item.code}) sisa ${item.availableQty} unit, di bawah minimum ${item.minStock}`,
+          type: "warning",
+          relatedModel: "Item",
+          relatedId: item._id,
+        });
+      }
+      sendWAToAdmins("low_stock_admin", {
+        items: `${item.name} (${item.code}) sisa ${item.availableQty}/${item.minStock}`,
       });
     }
 

@@ -16,6 +16,7 @@ import {
   registerSchema,
   loginSchema,
   changePasswordSchema,
+  normalizePhone,
 } from "../utils/validation.js";
 import type { AppEnv } from "../types/env.js";
 
@@ -83,7 +84,7 @@ auth.post("/register", rateLimiter(5, 60_000), async (c) => {
       password: hashedPassword,
       role: role || "staff",
       department,
-      phone,
+      phone: phone ? normalizePhone(phone) : undefined,
     });
 
     const token = generateToken(user._id.toString(), user.role);
@@ -192,7 +193,7 @@ auth.put("/profile", authMiddleware, async (c) => {
     if (name && typeof name === "string" && name.trim().length >= 2)
       updates.name = name.trim();
     if (department !== undefined) updates.department = department;
-    if (phone !== undefined) updates.phone = phone;
+    if (phone !== undefined) updates.phone = phone ? normalizePhone(phone) : "";
 
     if (Object.keys(updates).length === 0) {
       return c.json({ error: "Tidak ada data yang diubah" }, 400);

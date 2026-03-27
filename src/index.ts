@@ -20,6 +20,8 @@ import stockRoutes from "./routes/stock.js";
 import configRoutes from "./routes/config.js";
 import whatsappRoutes from "./routes/whatsapp.js";
 import { startOverdueCron, stopOverdueCron } from "./services/overdueCron.js";
+import { whatsapp } from "./services/whatsapp.js";
+import { SystemConfig } from "./models/SystemConfig.js";
 
 dotenv.config();
 
@@ -87,9 +89,24 @@ app.get("/api/health", (c) =>
 // Connect DB and start server
 const PORT = parseInt(process.env.PORT || "4000");
 
-connectDB().then(() => {
+connectDB().then(async () => {
   // Start overdue checker cron
   startOverdueCron();
+
+  // Auto-connect WhatsApp if enabled
+  try {
+    const waConfig = await SystemConfig.findOne({ key: "whatsappEnabled" });
+    if (waConfig && waConfig.value) {
+      console.log("[WA] WhatsApp enabled, auto-connecting...");
+      whatsapp.connect();
+    } else {
+      console.log(
+        "[WA] WhatsApp disabled or not configured, skipping auto-connect",
+      );
+    }
+  } catch (err) {
+    console.error("[WA] Auto-connect check failed:", err);
+  }
 
   const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`🚀 Server running on http://localhost:${info.port}`);

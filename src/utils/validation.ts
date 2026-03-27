@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+/**
+ * Normalisasi nomor telepon Indonesia ke format 628xxx
+ * Menerima: 08xxx, 628xxx, +628xxx, 62-8xxx, +62 8xxx, dll.
+ */
+export function normalizePhone(phone: string): string {
+  let cleaned = phone.replace(/[\s\-\(\)\+]/g, "");
+  if (cleaned.startsWith("0")) cleaned = "62" + cleaned.slice(1);
+  return cleaned;
+}
+
 // ===== AUTH =====
 const passwordSchema = z
   .string()

@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { User } from "../models/User.js";
 import { Borrowing } from "../models/Borrowing.js";
 import { authMiddleware, roleGuard } from "../middleware/auth.js";
-import { updateUserSchema } from "../utils/validation.js";
+import { updateUserSchema, normalizePhone } from "../utils/validation.js";
 
 const users = new Hono();
 users.use("*", authMiddleware);
@@ -58,6 +58,8 @@ users.put("/:id", roleGuard("super_admin", "admin"), async (c) => {
       return c.json({ error: parsed.error.issues[0].message }, 400);
     }
     const data = { ...parsed.data } as any;
+
+    if (data.phone) data.phone = normalizePhone(data.phone);
 
     // Only super_admin can change roles
     const currentRole = c.get("userRole");
